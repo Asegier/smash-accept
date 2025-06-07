@@ -5,7 +5,6 @@ import requests
 from bs4 import BeautifulSoup
 from datetime import datetime, timezone, timedelta
 import json
-import time
 
 app = Flask(__name__)
 
@@ -36,74 +35,49 @@ def check_email_and_click():
     five_hours_ago = now - timedelta(hours=5)
     since_date = now.strftime('%d-%b-%Y')
 
-    print(f"Checking emails from {SENDER} since {since_date} (last 5 hours filtered)...")
-    with MailBox('imap.gmail.com').login(EMAIL, PASSWORD) as mailbox:
-        count_checked = 0
-        for msg in mailbox.fetch(criteria=f'FROM {SENDER} SINCE {since_date}'):
-            # Only check the latest 10 emails
-            if count_checked >= 10:
-                break
-            count_checked += 1
+    try:
+        with MailBox('imap.gmail.com').login(EMAIL, PASSWORD) as mailbox:
+            for msg in mailbox.fetch(criteria=f'FROM {SENDER} SINCE {since_date}'):
+                if msg.date < five_hours_ago:
+                    continue
 
-            # Filter messages received within last 5 hours
-            if msg.date < five_hours_ago:
-                continue
+                if msg.subject != "An Opening Has Become Available":
+                    continue
 
-            if msg.subject != "An Opening Has Become Available":
-                continue
+                if msg.uid in clicked_message_ids:
+                    return f"Checked email from {msg.from_} already and previously clicked Accept (UID: {msg.uid})"
 
-            if msg.uid in clicked_message_ids:
-                print(f"Already processed email with subject: {msg.subject}, UID: {msg.uid}")
-                return "already_processed"
+                html_content = msg.html or ""
+                if not html_content:
+                    return "No HTML content to parse in the email."
 
-            print(f"Found new email: {msg.subject}, UID: {msg.uid}")
-            html_content = msg.html or ""
-            if not html_content:
-                print("No HTML content to parse, skipping.")
-                continue
+                soup = BeautifulSoup(html_content, "html.parser")
+                accept_link = None
+                for a_tag in soup.find_all("a"):
+                    if a_tag.text.strip().lower() == "accept":
+                        accept_link = a_tag.get("href")
+                        break
 
-            soup = BeautifulSoup(html_content, "html.parser")
-            accept_link = None
-            for a_tag in soup.find_all("a"):
-                if a_tag.text.strip().lower() == "accept":
-                    accept_link = a_tag.get("href")
-                    break
-
-            if accept_link:
-                print("Clicking Accept link:", accept_link)
-                try:
+                if accept_link:
                     response = requests.get(accept_link, timeout=5)
-                    print("Clicked! Status code:", response.status_code)
-                    clicked_message_ids.add(msg.uid)
-                    save_clicked_ids(clicked_message_ids)
-                    return "clicked"
-                except Exception as e:
-                    print("Error clicking link:", e)
-                    return f"error_clicking_link: {e}"
-            else:
-                print("No 'Accept' link found in email.")
-                return "no_accept_link"
+                    if response.status_code == 200:
+                        clicked_message_ids.add(msg.uid)
+                        save_clicked_ids(clicked_message_ids)
+                        return f"Clicked 'Accept' link successfully for email UID {msg.uid}."
+                    else:
+                        return f"Failed to click 'Accept' link (status code {response.status_code})."
+                else:
+                    return "No 'Accept' link found in email."
 
-    print("No new emails from Smash Champs.")
-    return "no_emails"
+        return f"No new emails from {SENDER} with subject 'An Opening Has Become Available' in the last 5 hours."
+
+    except Exception as e:
+        return f"Error during email check: {e}"
 
 @app.route("/")
 def home():
-    start = time.time()
-    result = check_email_and_click()
-    end = time.time()
-    print(f"check_email_and_click took {end - start:.2f} seconds")
-
-    if result == "clicked":
-        return "<h2>Success! 'Accept' link clicked.</h2>"
-    elif result == "already_processed":
-        return "<h2>Email already processed.</h2>"
-    elif result == "no_emails":
-        return "<h2>No new emails from Smash Champs.</h2>"
-    elif result == "no_accept_link":
-        return "<h2>No 'Accept' link found in email.</h2>"
-    else:
-        return f"<h2>Error: {result}</h2>"
+    result_message = check_email_and_click()
+    return f"<h2>{result_message}</h2>"
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
