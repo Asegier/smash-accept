@@ -11,11 +11,17 @@ app = Flask(__name__)
 EMAIL = os.getenv("EMAIL")
 PASSWORD = os.getenv("EMAIL_PASSWORD")
 SENDER = "no-reply@clubautomation.com"
+TARGET_SUBJECT = "An Opening Has Become Available"
 
 if not EMAIL or not PASSWORD:
     raise ValueError("EMAIL or EMAIL_PASSWORD environment variables are missing")
 
 CLICKED_IDS_FILE = "clicked_ids.json"
+
+def log(message):
+    """Print log with UTC timestamp for Render logs."""
+    now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[{now} UTC] {message}")
 
 def load_clicked_ids():
     try:
@@ -32,46 +38,52 @@ clicked_message_ids = load_clicked_ids()
 
 def check_email_and_click():
     now = datetime.now(timezone.utc)
-    thirty_minutes_ago = now - timedelta(minutes=30)
-    since_date = now.strftime('%d-%b-%Y')
+    five_hours_ago = now - timedelta(hours=5)
+    since_date = five_hours_ago.strftime('%d-%b-%Y')
 
-    print(f"Checking emails from {SENDER} since {since_date} (last 30 mins filtered)...")
-    with MailBox('imap.gmail.com').login(EMAIL, PASSWORD) as mailbox:
-        for msg in mailbox.fetch(criteria=f'FROM {SENDER} SINCE {since_date}'):
-            # Filter messages received within last 30 minutes
-            if msg.date < thirty_minutes_ago:
-                continue
+    log(f"Checking emails from {SENDER} since {since_date} (filtering last 5 hours)...")
+    try:
+        with MailBox('imap.gmail.com').login(EMAIL, PASSWORD) as mailbox:
+            for msg in mailbox.fetch(criteria=f'FROM {SENDER} SINCE {since_date}'):
+                if msg.date < five_hours_ago:
+                    continue
 
-            if msg.uid in clicked_message_ids:
-                print(f"Already processed: {msg.subject}")
-                continue
+                if msg.uid in clicked_message_ids:
+                    log(f"Already processed: {msg.subject}")
+                    continue
 
-            print(f"Found new email: {msg.subject}")
-            html_content = msg.html or ""
-            if not html_content:
-                print("No HTML content to parse, skipping.")
-                continue
+                if msg.subject.strip() != TARGET_SUBJECT:
+                    log(f"Ignoring email with different subject: {msg.subject}")
+                    continue
 
-            soup = BeautifulSoup(html_content, "html.parser")
-            accept_link = None
-            for a_tag in soup.find_all("a"):
-                if a_tag.text.strip().lower() == "accept":
-                    accept_link = a_tag.get("href")
-                    break
+                log(f"Found target email: {msg.subject}")
+                html_content = msg.html or ""
+                if not html_content:
+                    log("No HTML content to parse, skipping.")
+                    continue
 
-            if accept_link:
-                print("Clicking Accept link:", accept_link)
-                try:
-                    response = requests.get(accept_link)
-                    print("Clicked! Status code:", response.status_code)
-                    clicked_message_ids.add(msg.uid)
-                    save_clicked_ids()
-                    return True  # Success: stop after first accepted link clicked
-                except Exception as e:
-                    print("Error clicking link:", e)
-                    return False
-            else:
-                print("No 'Accept' link found in email.")
+                soup = BeautifulSoup(html_content, "html.parser")
+                accept_link = None
+                for a_tag in soup.find_all("a"):
+                    if a_tag.text.strip().lower() == "accept":
+                        accept_link = a_tag.get("href")
+                        break
+
+                if accept_link:
+                    log("Clicking Accept link: " + accept_link)
+                    try:
+                        response = requests.get(accept_link)
+                        log(f"Clicked! Status code: {response.status_code}")
+                        clicked_message_ids.add(msg.uid)
+                        save_clicked_ids()
+                        return True
+                    except Exception as e:
+                        log(f"Error clicking link: {e}")
+                        return False
+                else:
+                    log("No 'Accept' link found in email.")
+    except Exception as e:
+        log(f"Error accessing mailbox: {e}")
     return False
 
 @app.route("/")
