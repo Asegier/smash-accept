@@ -35,21 +35,30 @@ def check_email_and_click():
     five_hours_ago = now - timedelta(hours=5)
     since_date = now.strftime('%d-%b-%Y')
 
+    print(f"Checking emails from {SENDER} since {since_date} (last 5 hours filtered)...")
+
     try:
         with MailBox('imap.gmail.com').login(EMAIL, PASSWORD) as mailbox:
             for msg in mailbox.fetch(criteria=f'FROM {SENDER} SINCE {since_date}'):
+                print(f"Processing email UID {msg.uid}, Subject: {msg.subject}, Date: {msg.date}")
+
                 if msg.date < five_hours_ago:
+                    print(f"Skipping email UID {msg.uid} because it's older than 5 hours.")
                     continue
 
                 if msg.subject != "An Opening Has Become Available":
+                    print(f"Skipping email UID {msg.uid} due to subject mismatch.")
                     continue
 
                 if msg.uid in clicked_message_ids:
-                    return f"Checked email from {msg.from_} already and previously clicked Accept (UID: {msg.uid})"
+                    log_msg = f"Already processed email with UID {msg.uid}, subject '{msg.subject}'."
+                    print(log_msg)
+                    return log_msg
 
                 html_content = msg.html or ""
                 if not html_content:
-                    return "No HTML content to parse in the email."
+                    print(f"No HTML content in email UID {msg.uid}. Skipping.")
+                    continue
 
                 soup = BeautifulSoup(html_content, "html.parser")
                 accept_link = None
@@ -59,20 +68,30 @@ def check_email_and_click():
                         break
 
                 if accept_link:
+                    print(f"Clicking Accept link for email UID {msg.uid}: {accept_link}")
                     response = requests.get(accept_link, timeout=5)
                     if response.status_code == 200:
                         clicked_message_ids.add(msg.uid)
                         save_clicked_ids(clicked_message_ids)
-                        return f"Clicked 'Accept' link successfully for email UID {msg.uid}."
+                        success_msg = f"Clicked 'Accept' link successfully for email UID {msg.uid}."
+                        print(success_msg)
+                        return success_msg
                     else:
-                        return f"Failed to click 'Accept' link (status code {response.status_code})."
+                        error_msg = f"Failed to click 'Accept' link for UID {msg.uid} (status code {response.status_code})."
+                        print(error_msg)
+                        return error_msg
                 else:
+                    print(f"No 'Accept' link found in email UID {msg.uid}.")
                     return "No 'Accept' link found in email."
 
-        return f"No new emails from {SENDER} with subject 'An Opening Has Become Available' in the last 5 hours."
+        no_email_msg = f"No new emails from {SENDER} with subject 'An Opening Has Become Available' in the last 5 hours."
+        print(no_email_msg)
+        return no_email_msg
 
     except Exception as e:
-        return f"Error during email check: {e}"
+        error_msg = f"Error during email check: {e}"
+        print(error_msg)
+        return error_msg
 
 @app.route("/")
 def home():
