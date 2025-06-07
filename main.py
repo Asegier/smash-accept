@@ -5,6 +5,8 @@ import requests
 from bs4 import BeautifulSoup
 from datetime import datetime, timezone, timedelta
 import json
+import smtplib
+from email.mime.text import MIMEText
 
 app = Flask(__name__)
 
@@ -29,6 +31,20 @@ def save_clicked_ids(clicked_message_ids):
         json.dump(list(clicked_message_ids), f)
 
 clicked_message_ids = load_clicked_ids()
+
+def send_notification(subject, body):
+    msg = MIMEText(body)
+    msg["Subject"] = subject
+    msg["From"] = EMAIL
+    msg["To"] = EMAIL  # Send to yourself
+
+    try:
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(EMAIL, PASSWORD)
+            server.send_message(msg)
+        print("Notification email sent.")
+    except Exception as e:
+        print(f"Failed to send notification email: {e}")
 
 def check_email_and_click():
     now = datetime.now(timezone.utc)
@@ -69,15 +85,35 @@ def check_email_and_click():
 
                 if accept_link:
                     print(f"Clicking Accept link for email UID {msg.uid}: {accept_link}")
-                    response = requests.get(accept_link, timeout=5)
+                    try:
+                        response = requests.get(accept_link, timeout=5)
+                    except Exception as click_err:
+                        error_msg = f"❌ Failed to click Accept link: {click_err}"
+                        print(error_msg)
+                        return error_msg
+
                     if response.status_code == 200:
                         clicked_message_ids.add(msg.uid)
                         save_clicked_ids(clicked_message_ids)
-                        success_msg = f"Clicked 'Accept' link successfully for email UID {msg.uid}."
+
+                        # Try to read response text
+                        try:
+                            page_soup = BeautifulSoup(response.text, "html.parser")
+                            body_text = page_soup.get_text(separator="\n", strip=True)
+                            body_text_preview = body_text[:500] + "..." if len(body_text) > 500 else body_text
+                        except Exception as parse_err:
+                            body_text_preview = f"(Could not parse page text: {parse_err})"
+
+                        success_msg = (
+                            f"✅ Clicked 'Accept' link for email UID {msg.uid}.\n"
+                            f"Link: {accept_link}\n\n"
+                            f"📄 Page text preview:\n{body_text_preview}"
+                        )
                         print(success_msg)
+                        send_notification("🏸 Badminton Spot Accepted", success_msg)
                         return success_msg
                     else:
-                        error_msg = f"Failed to click 'Accept' link for UID {msg.uid} (status code {response.status_code})."
+                        error_msg = f"⚠️ Failed to click 'Accept' link for UID {msg.uid} (status code {response.status_code})."
                         print(error_msg)
                         return error_msg
                 else:
@@ -89,7 +125,7 @@ def check_email_and_click():
         return no_email_msg
 
     except Exception as e:
-        error_msg = f"Error during email check: {e}"
+        error_msg = f"❌ Error during email check: {e}"
         print(error_msg)
         return error_msg
 
