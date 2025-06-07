@@ -11,17 +11,11 @@ app = Flask(__name__)
 EMAIL = os.getenv("EMAIL")
 PASSWORD = os.getenv("EMAIL_PASSWORD")
 SENDER = "no-reply@clubautomation.com"
-TARGET_SUBJECT = "An Opening Has Become Available"
 
 if not EMAIL or not PASSWORD:
     raise ValueError("EMAIL or EMAIL_PASSWORD environment variables are missing")
 
 CLICKED_IDS_FILE = "clicked_ids.json"
-
-def log(message):
-    """Print log with UTC timestamp for Render logs."""
-    now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[{now} UTC] {message}")
 
 def load_clicked_ids():
     try:
@@ -39,60 +33,69 @@ clicked_message_ids = load_clicked_ids()
 def check_email_and_click():
     now = datetime.now(timezone.utc)
     five_hours_ago = now - timedelta(hours=5)
-    since_date = five_hours_ago.strftime('%d-%b-%Y')
+    found_email = False
+    already_processed = False
 
-    log(f"Checking emails from {SENDER} since {since_date} (filtering last 5 hours)...")
-    try:
-        with MailBox('imap.gmail.com').login(EMAIL, PASSWORD) as mailbox:
-            for msg in mailbox.fetch(criteria=f'FROM {SENDER} SINCE {since_date}'):
-                if msg.date < five_hours_ago:
-                    continue
+    print(f"Checking emails from {SENDER} since {five_hours_ago.isoformat()}")
 
-                if msg.uid in clicked_message_ids:
-                    log(f"Already processed: {msg.subject}")
-                    continue
+    with MailBox('imap.gmail.com').login(EMAIL, PASSWORD) as mailbox:
+        for msg in mailbox.fetch(criteria=f'FROM {SENDER}'):
+            if msg.date < five_hours_ago:
+                continue
+            found_email = True
+            if msg.subject != "An Opening Has Become Available":
+                continue
+            if msg.uid in clicked_message_ids:
+                print(f"Already processed email with subject: {msg.subject}, UID: {msg.uid}")
+                already_processed = True
+                continue
 
-                if msg.subject.strip() != TARGET_SUBJECT:
-                    log(f"Ignoring email with different subject: {msg.subject}")
-                    continue
+            print(f"Found new email: {msg.subject}, UID: {msg.uid}")
 
-                log(f"Found target email: {msg.subject}")
-                html_content = msg.html or ""
-                if not html_content:
-                    log("No HTML content to parse, skipping.")
-                    continue
+            html_content = msg.html or ""
+            if not html_content:
+                print("No HTML content to parse, skipping.")
+                continue
 
-                soup = BeautifulSoup(html_content, "html.parser")
-                accept_link = None
-                for a_tag in soup.find_all("a"):
-                    if a_tag.text.strip().lower() == "accept":
-                        accept_link = a_tag.get("href")
-                        break
+            soup = BeautifulSoup(html_content, "html.parser")
+            accept_link = None
+            for a_tag in soup.find_all("a"):
+                if a_tag.text.strip().lower() == "accept":
+                    accept_link = a_tag.get("href")
+                    break
 
-                if accept_link:
-                    log("Clicking Accept link: " + accept_link)
-                    try:
-                        response = requests.get(accept_link)
-                        log(f"Clicked! Status code: {response.status_code}")
-                        clicked_message_ids.add(msg.uid)
-                        save_clicked_ids()
-                        return True
-                    except Exception as e:
-                        log(f"Error clicking link: {e}")
-                        return False
-                else:
-                    log("No 'Accept' link found in email.")
-    except Exception as e:
-        log(f"Error accessing mailbox: {e}")
-    return False
+            if accept_link:
+                print("Clicking Accept link:", accept_link)
+                try:
+                    response = requests.get(accept_link)
+                    print("Clicked! Status code:", response.status_code)
+                    clicked_message_ids.add(msg.uid)
+                    save_clicked_ids()
+                    return "clicked"
+                except Exception as e:
+                    print("Error clicking link:", e)
+                    return f"error: {e}"
+
+    if already_processed:
+        return "already_processed"
+    if not found_email:
+        return "no_emails"
+    return "no_accept_link"
 
 @app.route("/")
 def home():
-    clicked = check_email_and_click()
-    if clicked:
+    result = check_email_and_click()
+
+    if result == "clicked":
         return "<h2>Success! 'Accept' link clicked.</h2>"
+    elif result == "already_processed":
+        return "<h2>No new emails, but one or more matching emails have already been processed.</h2>"
+    elif result == "no_emails":
+        return "<h2>No new emails from Smash Champs found in the last 5 hours.</h2>"
+    elif result.startswith("error"):
+        return f"<h2>Error occurred: {result[6:]}</h2>"
     else:
-        return "<h2>No new 'Accept' links found or already processed.</h2>"
+        return "<h2>No new 'Accept' links found in the emails.</h2>"
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080)
